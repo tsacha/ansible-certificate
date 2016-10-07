@@ -53,6 +53,7 @@ class CertificateAuthority:
         self.name              = module.params['name']
         self.configfile        = module.params['config']
         self.country_name      = module.params['country_name']
+        self.locality          = module.params['locality']
         self.state_name        = module.params['state_name']
         self.organization      = module.params['organization']
         self.organization_unit = module.params['organization_unit']
@@ -80,9 +81,7 @@ class CertificateAuthority:
                 self.create_authority()
             else:
                 if self.authority_expired():
-                    self.delete_authority()
-                    self.create_authority()
-
+                    self.create_authority(renew=True)
         else:
             self.module.exit_json(failed=True, msg='Configuration file not accessible')
 
@@ -102,15 +101,16 @@ class CertificateAuthority:
                 self.config[section.strip()][item[0].strip()] = item[1]
 
     def directories_exists(self):
-        self.default_ca = self.config['ca']['default_ca']
-        self.dir = self.config[self.default_ca]['dir']
+        self.default_ca  = self.config['ca']['default_ca']
+        self.dir         = self.config[self.default_ca]['dir']
+        self.private_key = self.config[self.default_ca]['private_key'].replace('$dir', self.dir)
+        self.private_dir = os.path.dirname(self.private_key)
+
         for subdir in ('certs', 'crl_dir', 'new_certs_dir'):
-            config_dir = self.config[self.default_ca][subdir].replace('$dir', self.dir)
+            config_dir= self.config[self.default_ca][subdir].replace('$dir', self.dir)
             if not os.path.exists(config_dir):
                 return False
-        private_key = self.config[self.default_ca]['private_key'].replace('$dir', self.dir)
-        private_dir = os.path.dirname(private_key)
-        if not os.path.exists(private_dir):
+        if not os.path.exists(self.private_dir):
             return False
         return True
         
@@ -119,11 +119,8 @@ class CertificateAuthority:
             config_dir = self.config[self.default_ca][subdir].replace('$dir', self.dir)
             if not os.path.exists(config_dir):
                 os.makedirs(config_dir)
-
-        private_key = self.config[self.default_ca]['private_key'].replace('$dir', self.dir)
-        private_dir = os.path.dirname(private_key)
-        if not os.path.exists(private_dir):
-            os.makedirs(private_dir)
+        if not os.path.exists(self.private_dir):
+            os.makedirs(self.private_dir)
 
     def database_exists(self):
         db = self.config[self.default_ca]['database'].replace('$dir', self.dir)
@@ -134,29 +131,57 @@ class CertificateAuthority:
         os.mknod(db)
 
     def serial_exists(self):
-        serial = self.config[self.default_ca]['serial'].replace('$dir', self.dir)
-        return os.path.exists(serial) and os.access(serial, os.W_OK)
+        self.serial = self.config[self.default_ca]['serial'].replace('$dir', self.dir)
+        return os.path.exists(self.serial) and os.access(self.serial, os.W_OK)
         
     def create_missing_serial(self):
-        serial = self.config[self.default_ca]['serial'].replace('$dir', self.dir)
-        with open(serial, 'a') as serial_f:
+        with open(self.serial, 'a') as serial_f:
             serial_f.write('1000')
 
     def private_key_exists(self):
-        private_key = self.config[self.default_ca]['private_key'].replace('$dir', self.dir)
-        return os.path.exists(private_key) and os.access(db, os.R_OK)
+        return os.path.exists(self.private_key) and os.access(self.private_key, os.R_OK)
 
     def create_private_key(self):
-        pass
+        (rc, uname_os, stderr) = self.module.run_command("openssl genrsa -out "+self.private_key+" 4096")
+        return rc
 
     def authority_exists(self):
-        pass
+        self.certificate = self.config[self.default_ca]['certificate'].replace('$dir', self.dir)
+        return os.path.exists(self.certificate) and os.access(self.certificate, os.R_OK)
 
-    def create_authority(self):
+    def create_authority(self, renew=False):
+        self.extensions = self.config['req']['x509_extensions']
+        self.infos = "/C={}/ST={}/L={}/O={}/OU={}/CN={}/emailAddress={}".format(
+            self.country_name,
+            self.state_name,
+            self.locality,
+            self.organization,
+            self.organization_unit,
+            self.name,
+            self.email)
+
         if hasattr(self, 'authority'):
-            self.create_intermediate_authority(self)
+            self.create_intermediate_authority()
         else:
-            pass
+            if renew:
+                pass
+            else:
+                command_name = ("openssl req -config {} "\
+                                    "-key {} "\
+                                    "-new "\
+                                    "-x509 "\
+                                    "-days 7300 "\
+                                    "-sha256 "\
+                                    "-extensions {} "\
+                                    "-out {} "\
+                                    "-subj '{}'"
+                                    ).format(self.configfile,
+                                             self.private_key,
+                                             self.extensions,
+                                             self.certificate,
+                                             self.infos)
+                print(command_name)
+                (rc, uname_os, stderr) = self.module.run_command(command_name)
 
     def create_intermediate_authority(self):
         pass
@@ -181,6 +206,7 @@ def main():
             name              = dict(required=True, aliases=['common_name']),
             config            = dict(required=True),
             country_name      = dict(required=True),
+            locality          = dict(required=True),
             state_name        = dict(required=True),
             organization      = dict(required=True),
             organization_unit = dict(required=True),
