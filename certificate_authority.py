@@ -167,7 +167,6 @@ class CertificateAuthority:
         return os.path.exists(private_key) and os.access(db, os.R_OK)
 
     def create_private_key(self):
-        print(OpenSSL.crypto.PKey.generate_key(OpenSSL.crypto.TYPE_RSA, 4096))
         pass
 
     def authority_exists(self):
