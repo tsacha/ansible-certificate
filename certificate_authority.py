@@ -38,26 +38,6 @@ EXAMPLES = '''
       organization_unit: TechUnit
       email: user@theworldcompany.com
     state: present
-
-- name: Create a client certificate request
-  certificate_client:
-    state: present
-    common_name: myclient1.tld
-    authority: mysubca
-    config: '/opt/mysubca/openssl.cnf'
-    informations:
-      countryname: FR
-      state: 'Loire-Atlantique'
-      locality: Nantes
-      organization: 'The World Company'
-      organization_unit: TechUnit
-      email: user@theworldcompany.com
-
-- name: Revoke a client request
-  certificate_client:
-    common_name: myclient2.tld
-    authority: myca
-    state: absent
 '''
 from ansible.module_utils.basic import AnsibleModule
 import OpenSSL
