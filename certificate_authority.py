@@ -106,12 +106,13 @@ class CertificateAuthority:
         self.dir         = self.config[self.default_ca]['dir']
         self.private_key = self.config[self.default_ca]['private_key'].replace('$dir', self.dir)
         self.private_dir = os.path.dirname(self.private_key)
+        self.csr_dir = self.dir + '/csr'
 
         for subdir in ('certs', 'crl_dir', 'new_certs_dir'):
             config_dir= self.config[self.default_ca][subdir].replace('$dir', self.dir)
             if not os.path.exists(config_dir):
                 return False
-        if not os.path.exists(self.private_dir):
+        if not os.path.exists(self.private_dir) or not os.path.exists(self.csr_dir):
             return False
         return True
         
@@ -122,6 +123,8 @@ class CertificateAuthority:
                 os.makedirs(config_dir)
         if not os.path.exists(self.private_dir):
             os.makedirs(self.private_dir)
+        if not os.path.exists(self.csr_dir):
+            os.makedirs(self.csr_dir)
 
     def database_exists(self):
         db = self.config[self.default_ca]['database'].replace('$dir', self.dir)
@@ -161,27 +164,27 @@ class CertificateAuthority:
             self.name,
             self.email)
 
-        if hasattr(self, 'authority_file'):
+        if self.authority_file != 'False':
             self.create_intermediate_authority(renew)
         else:
             if renew:
                 print("Yeah")
             else:
-                command_name = ("openssl req -config {} "\
-                                    "-key {} "\
-                                    "-new "\
-                                    "-x509 "\
-                                    "-days 7300 "\
-                                    "-sha256 "\
-                                    "-extensions {} "\
-                                    "-out {} "\
-                                    "-subj '{}'"
-                                    ).format(self.configfile,
+                command_line = ("openssl req -config {} "\
+                                "-key {} "\
+                                "-new "\
+                                "-x509 "\
+                                "-days 7300 "\
+                                "-sha256 "\
+                                "-extensions {} "\
+                                "-out {} "\
+                                "-subj '{}'"
+                                ).format(self.configfile,
                                              self.private_key,
                                              self.extensions,
                                              self.certificate,
                                              self.infos)
-                (rc, uname_os, stderr) = self.module.run_command(command_name)
+                (rc, uname_os, stderr) = self.module.run_command(command_line)
 
     def create_intermediate_authority(self, renew=False):
         if renew:
@@ -194,11 +197,41 @@ class CertificateAuthority:
         return False
 
     def create_request_and_sign(self):
-        print("Key")
-        
+        command_line = ("openssl req -config {} "\
+                            "-new "\
+                            "-sha256 "\
+                            "-key {} " \
+                            "-out {}/{}.pem "\
+                            "-subj '{}'"
+                            ).format(self.configfile,
+                                         self.private_key,
+                                         self.csr_dir,
+                                         self.name,
+                                         self.infos)
+        (rc, uname_os, stderr) = self.module.run_command(command_line)
+
+        if rc == 0:
+            print(":)")
+            command_line = ("openssl ca "\
+                                "-config {} "\
+                                "-extensions {} "\
+                                "-days 3650 "\
+                                "-notext "\
+                                "-md sha256 "\
+                                "-in {}/{}.pem "\
+                                "-out {}").format(self.authority_file,
+                                                      self.extensions,
+                                                      self.csr_dir,
+                                                      self.name,
+                                                      self.certificate)
+            print(command_line)
+            (rc_signed, output_signed, stderr_signed) = self.module.run_command(command_line)
+            if rc_signed == 0:
+                print(":)")
+                 
         
     def delete_authority(self):
-        if hasattr(self, 'authority_file'):
+        if self.attribute_file:
             self.delete_intermediate_authority(self)
         else:
             pass
