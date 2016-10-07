@@ -40,7 +40,8 @@ EXAMPLES = '''
     state: present
 '''
 from ansible.module_utils.basic import AnsibleModule
-import OpenSSL
+from datetime import datetime, timedelta
+import ssl
 import ConfigParser
 import os
 
@@ -58,8 +59,8 @@ class CertificateAuthority:
         self.organization      = module.params['organization']
         self.organization_unit = module.params['organization_unit']
         self.email             = module.params['email']
-        if 'authority' in module.params:
-            self.authority         = module.params['authority']
+        if 'authority_file' in module.params:
+            self.authority_file     = module.params['authority_file']
 
     def present(self):
         if self.config_exists():
@@ -160,11 +161,11 @@ class CertificateAuthority:
             self.name,
             self.email)
 
-        if hasattr(self, 'authority'):
-            self.create_intermediate_authority()
+        if hasattr(self, 'authority_file'):
+            self.create_intermediate_authority(renew)
         else:
             if renew:
-                pass
+                print("Yeah")
             else:
                 command_name = ("openssl req -config {} "\
                                     "-key {} "\
@@ -180,14 +181,24 @@ class CertificateAuthority:
                                              self.extensions,
                                              self.certificate,
                                              self.infos)
-                print(command_name)
                 (rc, uname_os, stderr) = self.module.run_command(command_name)
 
-    def create_intermediate_authority(self):
-        pass
+    def create_intermediate_authority(self, renew=False):
+        if renew:
+            print("Yeah (inter)")
+        else:
+            if not self.certificate_signed():
+                self.create_request_and_sign()
 
+    def certificate_signed(self):
+        return False
+
+    def create_request_and_sign(self):
+        print("Key")
+        
+        
     def delete_authority(self):
-        if hasattr(self, 'authority'):
+        if hasattr(self, 'authority_file'):
             self.delete_intermediate_authority(self)
         else:
             pass
@@ -196,7 +207,14 @@ class CertificateAuthority:
         pass
 
     def authority_expired(self):
-        pass
+        (rc, not_after, stderr) = self.module.run_command(
+            "openssl x509 -in {} -enddate -noout".format(self.certificate))
+        not_after_str = not_after.split('=')[1].strip()
+        timestamp = ssl.cert_time_to_seconds(not_after_str)
+
+        delta = datetime.fromtimestamp(timestamp)-datetime.now()
+        limit = timedelta(days=7200)
+        return limit > delta
 
 
 def main():
@@ -204,6 +222,7 @@ def main():
         argument_spec = dict(
             state             = dict(default='present', choices=['present', 'absent']),
             name              = dict(required=True, aliases=['common_name']),
+            authority_file    = dict(default=False),
             config            = dict(required=True),
             country_name      = dict(required=True),
             locality          = dict(required=True),
