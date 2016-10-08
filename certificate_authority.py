@@ -42,22 +42,22 @@ EXAMPLES = '''
 from ansible.module_utils.basic import AnsibleModule
 from datetime import datetime, timedelta
 import ssl
-import ConfigParser
+import configparser
 import os
 
 class CertificateAuthority:
     def __init__(self, module):
         self.module = module
-        self.config = dict()
 
         self.state             = module.params['state']
         self.name              = module.params['name']
-        self.configfile        = module.params['config']
+        self.config_file       = module.params['config']
         self.country_name      = module.params['country_name']
         self.locality          = module.params['locality']
         self.state_name        = module.params['state_name']
         self.organization      = module.params['organization']
         self.organization_unit = module.params['organization_unit']
+        self.days              = int(module.params['days'])
         self.email             = module.params['email']
         if 'authority_file' in module.params:
             self.authority_file     = module.params['authority_file']
@@ -91,15 +91,24 @@ class CertificateAuthority:
             self.delete_authority()
  
     def config_exists(self):
-        return os.path.exists(self.configfile) and os.access(self.configfile, os.R_OK)
+        return os.path.exists(self.config_file) and os.access(self.config_file, os.R_OK)
 
-    def parse_config(self):
-        cfg = ConfigParser.ConfigParser()
-        cfg.read(self.configfile)
-        for section in cfg.sections():
-            self.config[section.strip()] = dict()
-            for item in cfg.items(section):
-                self.config[section.strip()][item[0].strip()] = item[1]
+    def parse_config(self, authority=False):
+        cfg = configparser.ConfigParser()
+        if not authority:
+            self.config = dict()
+            cfg.read(self.config_file)
+            for section in cfg.sections():
+                self.config[section.strip()] = dict()
+                for item in cfg.items(section):
+                    self.config[section.strip()][item[0].strip()] = item[1]
+        else:
+            self.authority_config = dict()
+            cfg.read(self.authority_file)
+            for section in cfg.sections():
+                self.authority_config[section.strip()] = dict()
+                for item in cfg.items(section):
+                    self.authority_config[section.strip()][item[0].strip()] = item[1]
 
     def directories_exists(self):
         self.default_ca  = self.config['ca']['default_ca']
@@ -174,13 +183,14 @@ class CertificateAuthority:
                                 "-key {} "\
                                 "-new "\
                                 "-x509 "\
-                                "-days 7300 "\
+                                "-days {} "\
                                 "-sha256 "\
                                 "-extensions {} "\
                                 "-out {} "\
                                 "-subj '{}'"
-                                ).format(self.configfile,
+                                ).format(self.config_file,
                                              self.private_key,
+                                             self.days,
                                              self.extensions,
                                              self.certificate,
                                              self.infos)
@@ -190,46 +200,54 @@ class CertificateAuthority:
         if renew:
             print("Yeah (inter)")
         else:
+            self.create_request()
             if not self.certificate_signed():
-                self.create_request_and_sign()
+                self.sign_certificate()
 
     def certificate_signed(self):
-        return False
+        self.parse_config(authority=True)
+        self.authority_dir = self.authority_config[self.default_ca]['dir']
+        self.authority_certificate = self.authority_config[self.default_ca]['certificate'].replace('$dir', self.authority_dir)
+        command_line = ("openssl verify -CAfile {} {}"
+                        ).format(self.authority_certificate,
+                                 self.certificate)
+        (rc, uname_os, stderr) = self.module.run_command(command_line)
+        if rc == 0:
+            return True
+        else:
+            return False
 
-    def create_request_and_sign(self):
+    def create_request(self):
         command_line = ("openssl req -config {} "\
                             "-new "\
                             "-sha256 "\
                             "-key {} " \
                             "-out {}/{}.pem "\
                             "-subj '{}'"
-                            ).format(self.configfile,
+                            ).format(self.config_file,
                                          self.private_key,
                                          self.csr_dir,
                                          self.name,
                                          self.infos)
         (rc, uname_os, stderr) = self.module.run_command(command_line)
 
-        if rc == 0:
-            print(":)")
-            command_line = ("openssl ca "\
-                                "-config {} "\
-                                "-extensions {} "\
-                                "-days 3650 "\
-                                "-notext "\
-                                "-md sha256 "\
-                                "-in {}/{}.pem "\
-                                "-out {}").format(self.authority_file,
-                                                      self.extensions,
-                                                      self.csr_dir,
-                                                      self.name,
-                                                      self.certificate)
-            print(command_line)
-            (rc_signed, output_signed, stderr_signed) = self.module.run_command(command_line)
-            if rc_signed == 0:
-                print(":)")
-                 
-        
+    def sign_certificate(self):
+        command_line = ("openssl ca "\
+                        "-batch "\
+                        "-config {} "\
+                        "-extensions {} "\
+                        "-days {} "\
+                        "-notext "\
+                        "-md sha256 "\
+                        "-in {}/{}.pem "\
+                        "-out {}").format(self.authority_file,
+                                          self.extensions,
+                                          self.days,
+                                          self.csr_dir,
+                                          self.name,
+                                          self.certificate)
+        (rc_signed, output_signed, stderr_signed) = self.module.run_command(command_line)                 
+
     def delete_authority(self):
         if self.attribute_file:
             self.delete_intermediate_authority(self)
@@ -246,7 +264,7 @@ class CertificateAuthority:
         timestamp = ssl.cert_time_to_seconds(not_after_str)
 
         delta = datetime.fromtimestamp(timestamp)-datetime.now()
-        limit = timedelta(days=7200)
+        limit = timedelta(days=(self.days/10))
         return limit > delta
 
 
@@ -256,6 +274,7 @@ def main():
             state             = dict(default='present', choices=['present', 'absent']),
             name              = dict(required=True, aliases=['common_name']),
             authority_file    = dict(default=False),
+            days              = dict(default=365),
             config            = dict(required=True),
             country_name      = dict(required=True),
             locality          = dict(required=True),
