@@ -42,28 +42,38 @@ EXAMPLES = '''
 from ansible.module_utils.basic import AnsibleModule
 from datetime import datetime, timedelta
 import ssl
-import configparser
+import ConfigParser as configparser
 import os
 
 class CertificateAuthority:
-    def __init__(self, module):
+    def __init__(self, module, renew=False):
         self.module = module
 
         self.state             = module.params['state']
         self.name              = module.params['name']
-        self.config_file       = module.params['config']
-        self.country_name      = module.params['country_name']
-        self.locality          = module.params['locality']
-        self.state_name        = module.params['state_name']
-        self.organization      = module.params['organization']
-        self.organization_unit = module.params['organization_unit']
-        self.days              = int(module.params['days'])
-        self.email             = module.params['email']
+        self.config_file       = module.params['config_file']
         if 'authority_file' in module.params:
-            self.authority_file     = module.params['authority_file']
+            self.authority_file    = module.params['authority_file']
+        if 'country_name' in module.params:
+            self.country_name      = module.params['country_name']            
+        if 'locality' in module.params:
+            self.locality          = module.params['locality']            
+        if 'state_name' in module.params:
+            self.state_name        = module.params['state_name']
+        if 'organization' in module.params:
+            self.organization      = module.params['organization']            
+        if 'organization_unit' in module.params:
+            self.organization_unit = module.params['organization_unit']
+        if 'days' in module.params:
+            self.days              = int(module.params['days'])            
+        if 'email' in module.params:
+            self.email             = module.params['email']            
+        if(renew):
+            self.present()
 
     def present(self):
         if self.config_exists():
+            self.timestamp = datetime.now().strftime("-%Y%m%d-%H%M%S")
             self.parse_config()
 
             if not self.directories_exists():
@@ -87,8 +97,13 @@ class CertificateAuthority:
             self.module.exit_json(failed=True, msg='Configuration file not accessible')
 
     def absent(self):
-        if self.authority_exists():
+        if self.config_exists():
+            self.parse_config()
+
+        if self.authority_exists(delete=True):
             self.delete_authority()
+        else:
+            print(":(")
  
     def config_exists(self):
         return os.path.exists(self.config_file) and os.access(self.config_file, os.R_OK)
@@ -110,13 +125,13 @@ class CertificateAuthority:
                 for item in cfg.items(section):
                     self.authority_config[section.strip()][item[0].strip()] = item[1]
 
-    def directories_exists(self):
         self.default_ca  = self.config['ca']['default_ca']
         self.dir         = self.config[self.default_ca]['dir']
         self.private_key = self.config[self.default_ca]['private_key'].replace('$dir', self.dir)
         self.private_dir = os.path.dirname(self.private_key)
         self.csr_dir = self.dir + '/csr'
 
+    def directories_exists(self):
         for subdir in ('certs', 'crl_dir', 'new_certs_dir'):
             config_dir= self.config[self.default_ca][subdir].replace('$dir', self.dir)
             if not os.path.exists(config_dir):
@@ -156,10 +171,14 @@ class CertificateAuthority:
 
     def create_private_key(self):
         (rc, uname_os, stderr) = self.module.run_command("openssl genrsa -out "+self.private_key+" 4096")
+        print("openssl genrsa -out "+self.private_key+" 4096")
         return rc
 
-    def authority_exists(self):
-        self.certificate = self.config[self.default_ca]['certificate'].replace('$dir', self.dir)
+    def authority_exists(self, delete=False):
+        if delete:
+            self.certificate = self.config[self.default_ca]['certificate'].replace('$dir', self.dir)
+        else:
+            self.certificate = self.config[self.default_ca]['certificate'].replace('$dir', self.dir)+self.timestamp
         return os.path.exists(self.certificate) and os.access(self.certificate, os.R_OK)
 
     def create_authority(self, renew=False):
@@ -177,7 +196,8 @@ class CertificateAuthority:
             self.create_intermediate_authority(renew)
         else:
             if renew:
-                print("Yeah")
+                self.module.params['authority_file'] = self.module.params['config']
+                CertificateAuthority(self.module, renew=True)
             else:
                 command_line = ("openssl req -config {} "\
                                 "-key {} "\
@@ -195,14 +215,14 @@ class CertificateAuthority:
                                              self.certificate,
                                              self.infos)
                 (rc, uname_os, stderr) = self.module.run_command(command_line)
+                cert_symlink = self.certificate.replace(self.timestamp, '')
+                if os.path.exists(cert_symlink) and os.access(cert_symlink, os.W_OK):
+                    os.remove(cert_symlink)
+                os.symlink(self.certificate, cert_symlink)
 
     def create_intermediate_authority(self, renew=False):
-        if renew:
-            print("Yeah (inter)")
-        else:
-            self.create_request()
-            if not self.certificate_signed():
-                self.sign_certificate()
+        self.create_request()
+        self.sign_certificate()
 
     def certificate_signed(self):
         self.parse_config(authority=True)
@@ -211,6 +231,7 @@ class CertificateAuthority:
         command_line = ("openssl verify -CAfile {} {}"
                         ).format(self.authority_certificate,
                                  self.certificate)
+        print(command_line)
         (rc, uname_os, stderr) = self.module.run_command(command_line)
         if rc == 0:
             return True
@@ -218,18 +239,22 @@ class CertificateAuthority:
             return False
 
     def create_request(self):
+        self.request = self.csr_dir+"/"+self.name+self.timestamp
         command_line = ("openssl req -config {} "\
                             "-new "\
                             "-sha256 "\
                             "-key {} " \
-                            "-out {}/{}.pem "\
+                            "-out {} "\
                             "-subj '{}'"
                             ).format(self.config_file,
                                          self.private_key,
-                                         self.csr_dir,
-                                         self.name,
+                                         self.request,
                                          self.infos)
         (rc, uname_os, stderr) = self.module.run_command(command_line)
+        request_symlink = self.request.replace(self.timestamp, '')
+        if os.path.exists(request_symlink) and os.access(request_symlink, os.W_OK):
+            os.remove(request_symlink)         
+        os.symlink(self.request, request_symlink)
 
     def sign_certificate(self):
         command_line = ("openssl ca "\
@@ -239,23 +264,27 @@ class CertificateAuthority:
                         "-days {} "\
                         "-notext "\
                         "-md sha256 "\
-                        "-in {}/{}.pem "\
+                        "-in {} "\
                         "-out {}").format(self.authority_file,
                                           self.extensions,
                                           self.days,
-                                          self.csr_dir,
-                                          self.name,
+                                          self.request,
                                           self.certificate)
-        (rc_signed, output_signed, stderr_signed) = self.module.run_command(command_line)                 
+        (rc_signed, output_signed, stderr_signed) = self.module.run_command(command_line)
+        cert_symlink = self.certificate.replace(self.timestamp, '')
+        if os.path.exists(cert_symlink) and os.access(cert_symlink, os.W_OK):
+            os.remove(cert_symlink)
+        os.symlink(self.certificate, cert_symlink)
 
     def delete_authority(self):
-        if self.attribute_file:
-            self.delete_intermediate_authority(self)
+        print("hoy")
+        if self.authority_file != 'False':
+            self.delete_intermediate_authority()
         else:
             pass
 
     def delete_intermediate_authority(self):
-        pass
+        print("hey")
 
     def authority_expired(self):
         (rc, not_after, stderr) = self.module.run_command(
@@ -275,13 +304,13 @@ def main():
             name              = dict(required=True, aliases=['common_name']),
             authority_file    = dict(default=False),
             days              = dict(default=365),
-            config            = dict(required=True),
-            country_name      = dict(required=True),
-            locality          = dict(required=True),
-            state_name        = dict(required=True),
-            organization      = dict(required=True),
-            organization_unit = dict(required=True),
-            email             = dict(required=True)))
+            config_file       = dict(required=True),
+            country_name      = dict(required=False),
+            locality          = dict(required=False),
+            state_name        = dict(required=False),
+            organization      = dict(required=False),
+            organization_unit = dict(required=False),
+            email             = dict(required=False)))
     ca = CertificateAuthority(module)
 
     if ca.state == 'absent':
