@@ -91,7 +91,7 @@ class CertificateAuthority:
             if not self.authority_exists():
                 self.create_authority()
             else:
-                if self.authority_expired():
+                if self.certificate_expired(self.certificate):
                     self.create_authority(renew=True)
         else:
             self.module.exit_json(failed=True, msg='Configuration file not accessible')
@@ -102,8 +102,6 @@ class CertificateAuthority:
 
         if self.authority_exists(delete=True):
             self.delete_authority()
-        else:
-            print(":(")
  
     def config_exists(self):
         return os.path.exists(self.config_file) and os.access(self.config_file, os.R_OK)
@@ -149,6 +147,14 @@ class CertificateAuthority:
             os.makedirs(self.private_dir)
         if not os.path.exists(self.csr_dir):
             os.makedirs(self.csr_dir)
+
+    def delete_directories(self):
+        for subdir in ('certs', 'crl_dir', 'new_certs_dir'):
+            config_dir = self.config[self.default_ca][subdir].replace('$dir', self.dir)
+            print(config_dir)
+        print(self.private_dir)
+        print(self.csr_dir)            
+        pass
 
     def database_exists(self):
         db = self.config[self.default_ca]['database'].replace('$dir', self.dir)
@@ -277,18 +283,30 @@ class CertificateAuthority:
         os.symlink(self.certificate, cert_symlink)
 
     def delete_authority(self):
-        print("hoy")
         if self.authority_file != 'False':
             self.delete_intermediate_authority()
         else:
-            pass
+            self.delete_directories()
 
     def delete_intermediate_authority(self):
-        print("hey")
+        dir_certs = os.path.dirname(self.certificate)
+        for root, dirname, filenames in os.walk(dir_certs):
+            for filename in filenames:
+                certificate = root+'/'+filename
+                if not os.path.islink(certificate):
+                    if not self.certificate_expired(certificate):
+                        command_line = ("openssl ca "\
+                                            "-batch "\
+                                            "-config {} "\
+                                            "-revoke {}").format(
+                                                self.authority_file,
+                                                certificate)
+                        (rc_revoked, output_revoked, stderr_revoked) = self.module.run_command(command_line)
+        self.delete_directories()
 
-    def authority_expired(self):
+    def certificate_expired(self, certificate):
         (rc, not_after, stderr) = self.module.run_command(
-            "openssl x509 -in {} -enddate -noout".format(self.certificate))
+            "openssl x509 -in {} -enddate -noout".format(certificate))
         not_after_str = not_after.split('=')[1].strip()
         timestamp = ssl.cert_time_to_seconds(not_after_str)
 
