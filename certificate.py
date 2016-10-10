@@ -15,8 +15,8 @@ options:
 EXAMPLES = '''
 - name: Create a certificate authority 'myca'
   certificate_authority:
-    common_name: myca
-    config: '/opt/myca/openssl.cnf'
+    name: myca
+    config_file: 'openssl.cnf'
     countryname: FR
     state: 'Loire-Atlantique'
     locality: Nantes
@@ -27,16 +27,15 @@ EXAMPLES = '''
 
 - name: Create an intermediate certificate authority 'mysubca'
   certificate_authority:
-    common_name: mysubca
-    authority: myca
+    name: mysubca
+    authority_file: myca.cnf
     config: '/opt/myca/mysubca/openssl.cnf'
-    informations:
-      countryname: FR
-      state: 'Loire-Atlantique'
-      locality: Nantes
-      organization: 'The World Company'
-      organization_unit: TechUnit
-      email: user@theworldcompany.com
+    countryname: FR
+    state: 'Loire-Atlantique'
+    locality: Nantes
+    organization: 'The World Company'
+    organization_unit: TechUnit
+    email: user@theworldcompany.com
     state: present
 '''
 from ansible.module_utils.basic import AnsibleModule
@@ -47,6 +46,7 @@ import os
 
 class Certificate:
     def __init__(self, module, renew=False):
+        self.changed = False
         self.module = module
 
         self.state                 = module.params['state']
@@ -178,30 +178,33 @@ class Certificate:
         for subdir in ('certs', 'crl_dir', 'new_certs_dir'):
             config_dir = self.config[self.default_ca][subdir].replace('$dir', self.dir)
             if not os.path.exists(config_dir):
+                self.add_change('Create directory {}'.format(config_dir))
                 os.makedirs(config_dir)
         if not os.path.exists(self.private_dir):
+            self.add_change('Create directory {}'.format(self.private_dir))
             os.makedirs(self.private_dir)
         if not os.path.exists(self.csr_dir):
+            self.add_change('Create directory {}'.format(self.csr_dir))
             os.makedirs(self.csr_dir)
 
     def delete_directories(self):
+        # Purge directories specified in configuration file
         for subdir in ('certs', 'crl_dir', 'new_certs_dir'):
             config_dir = self.config[self.default_ca][subdir].replace('$dir', self.dir)
             for root, dirnames, filenames in os.walk(config_dir):
                 for filename in filenames:
+                    self.add_change('Remove file {}/{}'.format(root,filename))
                     os.remove(root+'/'+filename)
-        for root, dirnames, filenames in os.walk(self.private_dir):
-            for filename in filenames:
-                os.remove(root+'/'+filename)
-        for root, dirnames, filenames in os.walk(self.csr_dir):
-            for filename in filenames:
-                os.remove(root+'/'+filename)
-        for root, dirnames, filenames in os.walk(self.dir):
-            for filename in filenames:
-                os.remove(root+'/'+filename)
-            for dirname in dirnames:
-                os.rmdir(root+'/'+dirname)
-            os.rmdir(root)
+
+        # Purge module-specific directories
+        dirs = [self.private_dir, self.csr_dir, self.dir]
+        for delete_dir in dirs:
+            for root, dirnames, filenames in os.walk(delete_dir):
+                for filename in filenames:
+                    self.add_change('Remove file {}/{}'.format(root,filename))
+                    os.remove(root+'/'+filename)
+                self.add_change('Remove directory {}'.format(root))
+                os.rmdir(root)                
 
     def database_exists(self):
         db = self.config[self.default_ca]['database'].replace('$dir', self.dir)
@@ -209,6 +212,7 @@ class Certificate:
         
     def create_missing_database(self):
         db = self.config[self.default_ca]['database'].replace('$dir', self.dir)
+        self.add_change('Add empty directory {}'.format(db))
         os.mknod(db)
 
     def serial_exists(self):
@@ -217,6 +221,7 @@ class Certificate:
         
     def create_missing_serial(self):
         with open(self.serial, 'a') as serial_f:
+            self.add_change('Initialize serial ({}) at 1000'.format(self.serial))
             serial_f.write('1000')
 
     def private_key_exists(self):
@@ -224,8 +229,12 @@ class Certificate:
 
     def create_private_key(self):
         command_line = "openssl genrsa -out "+self.private_key+" 4096"
-        print(command_line)        
+        self.module.debug(command_line)
+        self.add_change('Generating new private key ({})'.format(self.private_key))
         (rc, uname_os, stderr) = self.module.run_command(command_line)
+        if(rc != 0):
+            self.add_error('Error while generating {}, rc={}, uname_os={}, stderr={}'.format(
+                rc, uname_os, stderr))
         return rc
 
     def authority_exists(self):
@@ -257,13 +266,20 @@ class Certificate:
                                              self.extension,
                                              self.certificate_ts,
                                              self.infos)
-                print(command_line)
+                self.module.debug(command_line)
+                self.add_change('Create new authority {}'.format(self.certificate_ts))
                 (rc, uname_os, stderr) = self.module.run_command(command_line)
+
+                if rc != 0:
+                    self.add_error('Error while generating {}, rc={}, uname_os={}, stderr={}'.format(
+                        rc, uname_os, stderr))
                 if os.path.exists(self.certificate) and os.access(cert_symlink, os.W_OK):
+                    self.add_change('Remove old authority symlink {}'.format(self.certificate))
                     os.remove(self.certificate)
                 os.symlink(self.certificate_ts, self.certificate)
                 with open(self.chain, 'w') as outfile:
                     with open(self.certificate) as infile:
+                        self.add_change('Generating new chain {}'.format(outfile))
                         outfile.write(infile.read())
 
     def create_intermediate_authority(self, renew=False):
@@ -273,9 +289,8 @@ class Certificate:
 
     def certificate_signed(self, is_certificate=False):
         command_line = ("openssl verify -CAfile {} {}").format(self.chain, self.certificate)
-        print(command_line)
+        self.module.debug(command_line)
         (rc, uname_os, stderr) = self.module.run_command(command_line)
-        print(rc)
         if rc == 0:
             return True
         else:
@@ -293,10 +308,12 @@ class Certificate:
                                          self.private_key,
                                          self.request,
                                          self.infos)
-        print(command_line)
+        self.module.debug(command_line)
+        self.add_change('Creating new request {}'.format(self.request))
         (rc, uname_os, stderr) = self.module.run_command(command_line)
         request_symlink = self.request.replace(self.timestamp, '')
         if os.path.exists(request_symlink) and os.access(request_symlink, os.W_OK):
+            self.add_change('Remove old request symlink {}'.format(request_symlink))
             os.remove(request_symlink)         
         os.symlink(self.request, request_symlink)
 
@@ -315,9 +332,11 @@ class Certificate:
                                           self.days,
                                           self.request,
                                           self.certificate_ts)
-        print(command_line)
+        self.module.debug(command_line)
+        self.add_change('Sign request {} and generate certificate {}'.format(self.request, self.certificate_ts))
         (rc_signed, output_signed, stderr_signed) = self.module.run_command(command_line)
         if os.path.exists(self.certificate) and os.access(self.certificate, os.W_OK):
+            self.add_change('Remove old certificate symlink {}'.format(self.certificate))
             os.remove(self.certificate)
 
         os.symlink(self.certificate_ts, self.certificate)
@@ -327,6 +346,7 @@ class Certificate:
             with open(self.chain, 'w') as outfile:
                 for chain in chains:
                     with open(chain) as infile:
+                        self.add_change('Add {} to {} chain file'.format(infile, outfile))
                         outfile.write(infile.read())
 
     def delete_authority(self):
@@ -349,8 +369,10 @@ class Certificate:
                                                 "-revoke {}").format(
                                                     self.config_file,
                                                     certificate)
-                            print(command_line)
+                            self.module.debug(command_line)
+                            self.add_change('Revoke certificate {}'.format(self.config_file))
                             (rc_revoked, output_revoked, stderr_revoked) = self.module.run_command(command_line)
+                        self.add_change('Remove certificate {}'.format(certificate))
                         os.remove(certificate)
                         
     def delete_intermediate_authority(self):
@@ -364,6 +386,8 @@ class Certificate:
                                         "-revoke {}").format(
                                             self.authority_file,
                                             certificate)
+                    self.module.debug(command_line)
+                    self.add_change("Revoke authority {}".format(self.authority_file))
                     (rc_revoked, output_revoked, stderr_revoked) = self.module.run_command(command_line)
         self.delete_directories()
 
@@ -377,6 +401,12 @@ class Certificate:
         limit = timedelta(days=(self.days/10))
         return limit > delta
 
+    def add_change(self, msg):
+        self.changed = True
+        if not self.changed:
+            self.msg = msg
+        else:
+            self.msg += msg + '\n'
 
 def main():
     module = AnsibleModule(
@@ -393,14 +423,16 @@ def main():
             state_name        = dict(required=False),
             organization      = dict(required=False),
             organization_unit = dict(required=False),
-            email             = dict(required=False)))
+            email             = dict(required=False)
+        )
+    )
     ca = Certificate(module)
 
     if ca.state == 'absent':
         ca.absent()
     elif ca.state == 'present':
         ca.present()
-    module.exit_json(changed=False)
+    module.exit_json(changed=ca.changed)
 
 if __name__ == '__main__':
     main()
