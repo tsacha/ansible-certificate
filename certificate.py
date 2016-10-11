@@ -402,11 +402,11 @@ class Certificate:
         return limit > delta
 
     def add_change(self, msg):
-        self.changed = True
         if not self.changed:
             self.msg = msg
         else:
             self.msg += msg + '\n'
+        self.changed = True
 
 def main():
     module = AnsibleModule(
