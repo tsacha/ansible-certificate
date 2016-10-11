@@ -31,12 +31,6 @@ EXAMPLES = '''
     state: present
     authority_file: '/opt/masterca.cnf'
     config_file: '/opt/interca.cnf'
-    country_name: '{{ countryname }}'
-    state_name: '{{ state }}'
-    locality: '{{ locality }}'
-    organization: '{{ organization }}'
-    organization_unit: '{{ organization_unit }}'
-    email: '{{ email }}'
 
 - name: create vhosts
   certificate:
@@ -44,12 +38,6 @@ EXAMPLES = '''
     is_certificate: true
     state: present
     config_file: '/opt/interca.cnf'
-    country_name: '{{ countryname }}'
-    state_name: '{{ state }}'
-    locality: '{{ locality }}'
-    organization: '{{ organization }}'
-    organization_unit: '{{ organization_unit }}'
-    email: '{{ email }}'
     extension: server_cert
   with_items:
     - "{{ vhosts.keys() }}"
@@ -66,7 +54,7 @@ class Certificate:
         self.module = module
 
         self.state                 = module.params['state']
-        self.name                  = module.params['name']
+        self.name                  = module.params['name'].replace(' ', '_')
         self.config_file           = module.params['config_file']
         if 'authority_file' in module.params:
             self.authority_file    = module.params['authority_file']
@@ -158,7 +146,21 @@ class Certificate:
 
         self.default_ca  = self.config['ca']['default_ca']
         self.dir         = self.config[self.default_ca]['dir']
-        self.csr_dir = self.dir + '/csr'
+        self.csr_dir     = self.dir + '/csr'
+
+        if self.country_name is None:
+            self.country_name      = self.config['req_distinguished_name']['countryname_default']
+        if self.locality is None:
+            self.locality          = self.config['req_distinguished_name']['localityname_default']
+        if self.state_name is None:
+            self.state_name        = self.config['req_distinguished_name']['stateorprovincename_default']
+        if self.organization is None:
+            self.organization      = self.config['req_distinguished_name']['0.organizationname_default']
+        if self.organization_unit is None:
+            self.organization_unit = self.config['req_distinguished_name']['organizationalunitname_default']
+        if self.email is None:
+            self.email             = self.config['req_distinguished_name']['emailaddress_default']
+
         self.infos = "/C={}/ST={}/L={}/O={}/OU={}/CN={}/emailAddress={}".format(
             self.country_name,
             self.state_name,
@@ -249,8 +251,8 @@ class Certificate:
         self.add_change('Generating new private key ({})'.format(self.private_key))
         (rc, uname_os, stderr) = self.module.run_command(command_line)
         if(rc != 0):
-            self.add_error('Error while generating {}, rc={}, uname_os={}, stderr={}'.format(
-                rc, uname_os, stderr))
+            self.module.exit_json(failed=True, msg='Error while generating {}, rc={}, uname_os={}, stderr={}'.format(
+                self.private_key, rc, uname_os, stderr))
         return rc
 
     def authority_exists(self):
@@ -287,8 +289,8 @@ class Certificate:
                 (rc, uname_os, stderr) = self.module.run_command(command_line)
 
                 if rc != 0:
-                    self.add_error('Error while generating {}, rc={}, uname_os={}, stderr={}'.format(
-                        rc, uname_os, stderr))
+                    self.module.exit_json(failed=True, msg='Error while generating {}, rc={}, uname_os={}, stderr={}'.format(
+                        self.config_file, rc, uname_os, stderr))
                 if os.path.exists(self.certificate) and os.access(cert_symlink, os.W_OK):
                     self.add_change('Remove old authority symlink {}'.format(self.certificate))
                     os.remove(self.certificate)
@@ -351,6 +353,9 @@ class Certificate:
         self.module.debug(command_line)
         self.add_change('Sign request {} and generate certificate {}'.format(self.request, self.certificate_ts))
         (rc_signed, output_signed, stderr_signed) = self.module.run_command(command_line)
+        if(rc_signed != 0):
+            self.module.exit_json(failed=True, msg='Error while signing {}, rc={}, uname_os={}, stderr={}'.format(
+                self.certificate_ts, rc_signed, output_signed, stderr_signed))
         if os.path.exists(self.certificate) and os.access(self.certificate, os.W_OK):
             self.add_change('Remove old certificate symlink {}'.format(self.certificate))
             os.remove(self.certificate)
