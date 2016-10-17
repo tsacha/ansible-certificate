@@ -41,11 +41,20 @@ EXAMPLES = '''
     extension: server_cert
   with_items:
     - "{{ vhosts.keys() }}"
+
+- name: list current vhosts
+  certificate:
+    name: master-ca
+    state: list
+    config_file: '/opt/masterca.cnf'
 '''
 from ansible.module_utils.basic import AnsibleModule
 from datetime import datetime, timedelta
 import ssl
-import ConfigParser as configparser
+try:
+    import ConfigParser as configparser
+except:
+    import configparser as configparser
 import os
 
 class Certificate:
@@ -80,6 +89,21 @@ class Certificate:
             self.email             = module.params['email']            
         if(renew):
             self.present()
+
+    def listing(self):
+        if self.config_exists():
+            self.parse_config(is_certificate=self.is_certificate)
+            if self.database_exists():
+                db = self.config[self.default_ca]['database'].replace('$dir', self.dir)
+                cn = []
+                with open(db) as dbfile:
+                    for line in dbfile:
+                       cn.append(line.split('/')[6].replace('CN=',''))
+                self.module.exit_json(changed=False,certs=cn)
+            else:
+                self.module.exit_json(changed=False,certs=[])
+        else:
+            self.module.exit_json(failed=True, msg='Configuration file not accessible')
 
     def present(self):
         if self.config_exists():
@@ -432,7 +456,7 @@ class Certificate:
 def main():
     module = AnsibleModule(
         argument_spec = dict(
-            state             = dict(default='present', choices=['present', 'absent']),
+            state             = dict(default='present', choices=['present', 'absent', 'list']),
             name              = dict(required=True, aliases=['common_name']),
             authority_file    = dict(default=False),
             days              = dict(default=365),
@@ -453,6 +477,8 @@ def main():
         ca.absent()
     elif ca.state == 'present':
         ca.present()
+    elif ca.state == 'list':
+        ca.listing()
     module.exit_json(changed=ca.changed)
 
 if __name__ == '__main__':
