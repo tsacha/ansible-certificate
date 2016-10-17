@@ -38,6 +38,7 @@ unique_subject    = no
 # See the POLICY FORMAT section of `man ca`.
 countryName             = match
 stateOrProvinceName     = match
+localityName            = optional
 organizationName        = match
 organizationalUnitName  = optional
 commonName              = supplied
