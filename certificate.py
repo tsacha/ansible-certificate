@@ -98,7 +98,8 @@ class Certificate:
                 cn = []
                 with open(db) as dbfile:
                     for line in dbfile:
-                       cn.append(line.split('/')[6].replace('CN=',''))
+                       if(line.startswith('V')):
+                           cn.append(line.split('/')[6].replace('CN=',''))
                 self.module.exit_json(changed=False,certs=cn)
             else:
                 self.module.exit_json(changed=False,certs=[])
