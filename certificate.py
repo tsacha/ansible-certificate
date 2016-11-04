@@ -341,13 +341,16 @@ class Certificate:
 
     def create_request(self):
         self.request = self.csr_dir+"/"+self.name+'.pem'+self.timestamp
-        command_line = ("openssl req -config {} "\
+        command_line = ("openssl req -config <(cat {} "\
+                            "<(printf '[SAN]\nsubjectAltName=DNS:{})) "\
                             "-new "\
                             "-sha256 "\
                             "-key {} " \
                             "-out {} "\
+                            "-reqexts SAN "\
                             "-subj '{}'"
                             ).format(self.config_file,
+                                         self.name,
                                          self.private_key,
                                          self.request,
                                          self.infos)
