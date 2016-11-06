@@ -186,14 +186,16 @@ class Certificate:
         if self.email is None:
             self.email             = self.config['req_distinguished_name']['emailaddress_default']
 
-        self.infos = "/C={}/ST={}/L={}/O={}/OU={}/CN={}/emailAddress={}".format(
+        self.infos = "/C={}/ST={}/L={}/O={}/OU={}/CN={}/emailAddress={}/subjectAltName=DNS.1={}".format(
             self.country_name,
             self.state_name,
             self.locality,
             self.organization,
             self.organization_unit,
             self.name,
-            self.email)
+            self.email,
+            self.name
+        )
         self.chain = self.config[self.default_ca]['certs'].replace('$dir', self.dir) + '/chain.pem'
         self.certs_dir = self.config[self.default_ca]['certs'].replace('$dir', self.dir)
 
@@ -341,16 +343,13 @@ class Certificate:
 
     def create_request(self):
         self.request = self.csr_dir+"/"+self.name+'.pem'+self.timestamp
-        command_line = ("openssl req -config <(cat {} "\
-                            "<(printf '[SAN]\nsubjectAltName=DNS:{}')) "\
+        command_line = ("openssl req -config {} "\
                             "-new "\
                             "-sha256 "\
                             "-key {} " \
                             "-out {} "\
-                            "-reqexts SAN "\
                             "-subj '{}'"
                             ).format(self.config_file,
-                                         self.name,
                                          self.private_key,
                                          self.request,
                                          self.infos)
