@@ -50,6 +50,7 @@ EXAMPLES = '''
 '''
 from ansible.module_utils.basic import AnsibleModule
 from datetime import datetime, timedelta
+import OpenSSL
 import ssl
 try:
     import ConfigParser as configparser
@@ -186,29 +187,28 @@ class Certificate:
         if self.email is None:
             self.email             = self.config['req_distinguished_name']['emailaddress_default']
 
-        self.infos = "/C={}/ST={}/L={}/O={}/OU={}/CN={}/emailAddress={}/subjectAltName=DNS.1={}".format(
+        self.infos = "/C={}/ST={}/L={}/O={}/OU={}/CN={}/emailAddress={}".format(
             self.country_name,
             self.state_name,
             self.locality,
             self.organization,
             self.organization_unit,
             self.name,
-            self.email,
-            self.name
+            self.email
         )
         self.chain = self.config[self.default_ca]['certs'].replace('$dir', self.dir) + '/chain.pem'
         self.certs_dir = self.config[self.default_ca]['certs'].replace('$dir', self.dir)
 
         if is_certificate:
             self.authority_file = self.config_file
-            self.certificate = self.certs_dir+'/'+self.name + '.crt.pem'
+            self.certificate_file = self.certs_dir+'/'+self.name + '.crt.pem'
             self.ca_private_key = self.config[self.default_ca]['private_key'].replace('$dir', self.dir)            
             self.private_dir = os.path.dirname(self.ca_private_key)            
-            self.private_key = self.private_dir + '/' + self.name + '.key.pem'
+            self.private_key_file = self.private_dir + '/' + self.name + '.key.pem'
         else:
-            self.private_key = self.config[self.default_ca]['private_key'].replace('$dir', self.dir)
-            self.private_dir = os.path.dirname(self.private_key)
-            self.certificate = self.config[self.default_ca]['certificate'].replace('$dir', self.dir)            
+            self.private_key_file = self.config[self.default_ca]['private_key'].replace('$dir', self.dir)
+            self.private_dir = os.path.dirname(self.private_key_file)
+            self.certificate_file = self.config[self.default_ca]['certificate'].replace('$dir', self.dir)            
 
     def directories_exists(self):
         for subdir in ('certs', 'crl_dir', 'new_certs_dir'):
@@ -270,23 +270,25 @@ class Certificate:
             serial_f.write('1000')
 
     def private_key_exists(self):
-        return os.path.exists(self.private_key) and os.access(self.private_key, os.R_OK)
+        pkey_exists =  os.path.exists(self.private_key_file) and os.access(self.private_key_file, os.R_OK)
+        if pkey_exists:
+            with open(self.private_key_file, 'r') as pkey:
+                self.private_key = OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, pkey.read())
+        return pkey_exists
 
     def create_private_key(self):
-        command_line = "openssl genrsa -out "+self.private_key+" 4096"
-        self.module.debug(command_line)
-        self.add_change('Generating new private key ({})'.format(self.private_key))
-        (rc, uname_os, stderr) = self.module.run_command(command_line)
-        if(rc != 0):
-            self.module.exit_json(failed=True, msg='Error while generating {}, rc={}, uname_os={}, stderr={}'.format(
-                self.private_key, rc, uname_os, stderr))
-        return rc
+        self.private_key = OpenSSL.crypto.PKey()
+        self.private_key.generate_key(OpenSSL.crypto.TYPE_RSA, 4096)
+        pkey_dump = OpenSSL.crypto.dump_privatekey(OpenSSL.crypto.FILETYPE_PEM,
+                                                   self.private_key)
+        with open(self.private_key_file, 'bw') as keyfile:
+            keyfile.write(pkey_dump)
 
     def authority_exists(self):
-        return os.path.exists(self.certificate) and os.access(self.certificate, os.R_OK)
+        return os.path.exists(self.certificate_file) and os.access(self.certificate_file, os.R_OK)
 
     def create_authority(self, renew=False):
-        self.certificate_ts = self.certificate+self.timestamp
+        self.certificate_ts = self.certificate_file+self.timestamp
         self.extension = self.config['req']['x509_extensions']
 
         if self.authority_file != 'False':
@@ -296,34 +298,50 @@ class Certificate:
                 self.module.params['authority_file'] = self.module.params['config_file']
                 Certificate(self.module, renew=True)
             else:
-                command_line = ("openssl req -config {} "\
-                                "-key {} "\
-                                "-new "\
-                                "-x509 "\
-                                "-days {} "\
-                                "-sha256 "\
-                                "-extensions {} "\
-                                "-out {} "\
-                                "-subj '{}'"
-                                ).format(self.config_file,
-                                             self.private_key,
-                                             self.days,
-                                             self.extension,
-                                             self.certificate_ts,
-                                             self.infos)
-                self.module.debug(command_line)
-                self.add_change('Create new authority {}'.format(self.certificate_ts))
-                (rc, uname_os, stderr) = self.module.run_command(command_line)
+                self.ca = OpenSSL.crypto.X509()
+                subject = self.ca.get_subject()
+                subject.C = self.country_name
+                subject.ST = self.state_name
+                subject.L = self.locality
+                subject.O = self.organization
+                subject.OU = self.organization_unit
+                subject.CN = self.name
+                subject.emailAddress = self.email
 
-                if rc != 0:
-                    self.module.exit_json(failed=True, msg='Error while generating {}, rc={}, uname_os={}, stderr={}'.format(
-                        self.config_file, rc, uname_os, stderr))
-                if os.path.exists(self.certificate) and os.access(cert_symlink, os.W_OK):
-                    self.add_change('Remove old authority symlink {}'.format(self.certificate))
-                    os.remove(self.certificate)
-                os.symlink(self.certificate_ts, self.certificate)
+                self.ca.set_version(2)
+                self.ca.set_serial_number(1000)
+                self.ca.gmtime_adj_notBefore(0)
+                self.ca.gmtime_adj_notAfter(self.days * 24 * 60 * 60)
+                self.ca.set_issuer(self.ca.get_subject())
+                self.ca.set_pubkey(self.private_key)
+
+                self.ca.add_extensions([
+                    OpenSSL.crypto.X509Extension(b"basicConstraints", True,
+                                                 b"CA:TRUE"),
+                    OpenSSL.crypto.X509Extension(b"keyUsage", True,
+                                                 b"digitalSignature, cRLSign, keyCertSign"),
+                    OpenSSL.crypto.X509Extension(b"subjectKeyIdentifier", False, b"hash",
+                                                 subject=self.ca)
+                ])
+                self.ca.add_extensions([
+                    OpenSSL.crypto.X509Extension(b'authorityKeyIdentifier', False,
+                                                 b'keyid:always', issuer=self.ca)
+                ])
+
+
+                self.ca.sign(self.private_key, 'sha256')
+                ca_dump = OpenSSL.crypto.dump_certificate(OpenSSL.crypto.FILETYPE_PEM,
+                                                          self.ca)
+                with open(self.certificate_ts, 'bw') as ca_file:
+                    ca_file.write(ca_dump)
+
+                cert_symlink = self.certificate_file.replace(self.timestamp, '')
+                if os.path.exists(self.certificate_file) and os.access(cert_symlink, os.W_OK):
+                    self.add_change('Remove old authority symlink {}'.format(self.certificate_file))
+                    os.remove(self.certificate_file)
+                os.symlink(self.certificate_ts, self.certificate_file)
                 with open(self.chain, 'w') as outfile:
-                    with open(self.certificate) as infile:
+                    with open(self.certificate_file) as infile:
                         self.add_change('Generating new chain {}'.format(outfile))
                         outfile.write(infile.read())
 
@@ -333,7 +351,7 @@ class Certificate:
         self.sign_certificate()
 
     def certificate_signed(self, is_certificate=False):
-        command_line = ("openssl verify -CAfile {} {}").format(self.chain, self.certificate)
+        command_line = ("openssl verify -CAfile {} {}").format(self.chain, self.certificate_file)
         self.module.debug(command_line)
         (rc, uname_os, stderr) = self.module.run_command(command_line)
         if rc == 0:
@@ -342,28 +360,36 @@ class Certificate:
             return False
 
     def create_request(self):
-        self.request = self.csr_dir+"/"+self.name+'.pem'+self.timestamp
-        command_line = ("openssl req -config {} "\
-                            "-new "\
-                            "-sha256 "\
-                            "-key {} " \
-                            "-out {} "\
-                            "-subj '{}'"
-                            ).format(self.config_file,
-                                         self.private_key,
-                                         self.request,
-                                         self.infos)
-        self.module.debug(command_line)
-        self.add_change('Creating new request {}'.format(self.request))
-        (rc, uname_os, stderr) = self.module.run_command(command_line)
-        request_symlink = self.request.replace(self.timestamp, '')
+        self.request_file = self.csr_dir+"/"+self.name+'.pem'+self.timestamp
+        self.req = OpenSSL.crypto.X509Req()
+        subject = self.req.get_subject()
+        subject.C = self.country_name
+        subject.ST = self.state_name
+        subject.L = self.locality
+        subject.O = self.organization
+        subject.OU = self.organization_unit
+        subject.CN = self.name
+        subject.emailAddress = self.email
+
+        if self.is_certificate:
+            subject_alt_names = []
+            ext = OpenSSL.crypto.X509Extension(b'subjectAltName', False, ('DNS:'+self.name).encode())
+            self.req.add_extensions([ext])
+        self.req.set_pubkey(self.private_key)
+        self.req.sign(self.private_key, 'sha256')
+        req_dump = OpenSSL.crypto.dump_certificate_request(OpenSSL.crypto.FILETYPE_PEM,
+                                                           self.req)
+        with open(self.request_file, 'bw') as req_file:
+            req_file.write(req_dump)
+        
+        request_symlink = self.request_file.replace(self.timestamp, '')
         if os.path.exists(request_symlink) and os.access(request_symlink, os.W_OK):
             self.add_change('Remove old request symlink {}'.format(request_symlink))
             os.remove(request_symlink)         
-        os.symlink(self.request, request_symlink)
+        os.symlink(self.request_file, request_symlink)
 
     def sign_certificate(self):
-        self.certificate_ts = self.certificate+self.timestamp
+        self.certificate_ts = self.certificate_file+self.timestamp
         command_line = ("openssl ca "\
                         "-batch "\
                         "-config {} "\
@@ -375,22 +401,22 @@ class Certificate:
                         "-out {}").format(self.authority_file,
                                           self.extension,
                                           self.days,
-                                          self.request,
+                                          self.request_file,
                                           self.certificate_ts)
         self.module.debug(command_line)
-        self.add_change('Sign request {} and generate certificate {}'.format(self.request, self.certificate_ts))
+        self.add_change('Sign request {} and generate certificate {}'.format(self.request_file, self.certificate_ts))
         (rc_signed, output_signed, stderr_signed) = self.module.run_command(command_line)
         if(rc_signed != 0):
             self.module.exit_json(failed=True, msg='Error while signing {}, rc={}, uname_os={}, stderr={}'.format(
                 self.certificate_ts, rc_signed, output_signed, stderr_signed))
-        if os.path.exists(self.certificate) and os.access(self.certificate, os.W_OK):
-            self.add_change('Remove old certificate symlink {}'.format(self.certificate))
-            os.remove(self.certificate)
+        if os.path.exists(self.certificate_file) and os.access(self.certificate_file, os.W_OK):
+            self.add_change('Remove old certificate symlink {}'.format(self.certificate_file))
+            os.remove(self.certificate_file)
 
-        os.symlink(self.certificate_ts, self.certificate)
+        os.symlink(self.certificate_ts, self.certificate_file)
 
         if not self.is_certificate:
-            chains = [ self.certificate, self.authority_chain ]
+            chains = [ self.certificate_file, self.authority_chain ]
             with open(self.chain, 'w') as outfile:
                 for chain in chains:
                     with open(chain) as infile:
@@ -440,7 +466,7 @@ class Certificate:
         self.delete_directories()
 
     def certificate_expired(self):
-        command_line = "openssl x509 -in {} -enddate -noout".format(self.certificate)
+        command_line = "openssl x509 -in {} -enddate -noout".format(self.certificate_file)
         (rc, not_after, stderr) = self.module.run_command(command_line)
         not_after_str = not_after.split('=')[1].strip()
         timestamp = ssl.cert_time_to_seconds(not_after_str)
