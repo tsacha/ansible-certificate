@@ -1,1 +1,1 @@
-python2 /opt/ansible/hacking/test-module -m /opt/ansible-certificate/certificate.py -a "state=present name=myca config_file=/opt/ca.cnf"
+python2 /opt/ansible/hacking/test-module -m /opt/ansible-certificate/certificate.py -a "state=present config_file=/opt/ca.yml"

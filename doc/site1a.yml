@@ -1,0 +1,14 @@
+---
+name: site1a.local
+is_certificate: true
+root_ca: /opt/subca.yml
+dir: /opt/mysubca
+days: 365
+infos:
+  country: FR
+  state: Loire-Atlantique
+  locality: Nantes
+  organization: World Company
+  organization_unit: Destruction Team
+  email_address: master@worldcompany.com
+

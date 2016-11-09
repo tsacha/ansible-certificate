@@ -1,0 +1,4 @@
+{days: 20, dir: /opt, infos: {
+    country: FR, email_address: master@worldcompany.com, locality: Nantes, organization: World
+      Company, organization_unit: Destruction Team, state: Loire-Atlantique}, name: mysubsubca,
+  root_ca: /opt/subca.yml, serial: 1001}
