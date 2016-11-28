@@ -283,7 +283,7 @@ class Certificate:
         self.chain = self.dir+'/certs/chain.pem'
 
         self.cert = OpenSSL.crypto.X509()
-        self.cert.set_version(3)
+        self.cert.set_version(2)
         self.cert.set_subject(self.csr.get_subject())
         self.cert.set_serial_number(self.index['current'])
         self.cert.gmtime_adj_notBefore(0)
