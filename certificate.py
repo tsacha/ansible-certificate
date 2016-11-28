@@ -206,7 +206,7 @@ class Certificate:
         subject.OU = self.config['infos']['organization_unit']
         subject.emailAddress = self.config['infos']['email_address']
         subject.CN = self.config['name'] 
-        self.ca.set_version(3)
+        self.ca.set_version(2)
         self.ca.set_serial_number(self.index['current'])
         self.ca.gmtime_adj_notBefore(0)
         self.ca.gmtime_adj_notAfter(self.config['days'] * 24 * 60 * 60)
