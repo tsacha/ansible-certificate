@@ -85,8 +85,10 @@ class Certificate:
         self.root_cert_file = {}
         self.root_pkey_file = {}
         self.root_pkey = {}
+        self.chain_cert_file = {}
         self.cert_file = {}
         self.cert_ts = {}
+        self.chain_cert_ts = {}
         self.csr_file = {}
         self.chain = {}
         self.csr = {}
@@ -172,6 +174,7 @@ class Certificate:
 
     def ensure_cert(self, certname):
         self.cert_file[certname] = self.dir[certname]+'/certs/'+certname+'.pem'
+        self.chain_cert_file[certname] = self.dir[certname]+'/certs/'+certname+'.chain.pem'
         if self.is_certificate[certname] or self.has_root_ca[certname]:
             self.root_cert_file[certname] = self.root_dir[certname]+'/certs/'+self.root_certname[certname]+'.pem'
             self.root_chain[certname] = self.root_dir[certname]+'/certs/chain.pem'
@@ -324,6 +327,7 @@ class Certificate:
 
     def sign_certificate(self, certname):
         self.cert_ts[certname] = self.cert_file[certname]+self.timestamp
+        self.chain_cert_ts[certname] = self.chain_cert_file[certname]+self.timestamp
         self.chain[certname] = self.dir[certname]+'/certs/chain.pem'
 
         self.cert[certname] = OpenSSL.crypto.X509()
@@ -372,6 +376,13 @@ class Certificate:
                 for chain in chains:
                     with open(chain) as infile:
                         outfile.write(infile.read())
+        else:
+            chains = [ self.cert_file[certname], self.chain[certname] ]
+            with open(self.chain_cert_ts[certname], 'w') as outfile:
+                for chain in chains:
+                    with open(chain) as infile:
+                        outfile.write(infile.read())
+            os.symlink(self.chain_cert_ts[certname], self.chain_cert_file[certname])
 
         self.index[certname][self.index[certname]['current']] = { 'status': 'valid', 'name': certname }
         self.index[certname]['current'] += 1
