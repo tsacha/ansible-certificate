@@ -74,6 +74,7 @@ class Certificate:
         self.dir = {}
         self.index = {}
         self.infos = {}
+        self.index_exists = {}
         self.index_file = {}
         self.config = {}
         self.root_dir = {}
@@ -114,6 +115,7 @@ class Certificate:
                 self.dir[certname] = conf_cert['dir']+'/'+conf_cert['name']
                 self.index_file[certname] = self.dir[self.root_certname[certname]]+'/index.yml'
             else:
+                self.root_certname[certname] = conf_cert['name']
                 self.dir[certname] = conf_cert['dir']+'/'+conf_cert['name']
                 self.index_file[certname] = self.dir[certname]+'/index.yml'
 
@@ -127,12 +129,12 @@ class Certificate:
             self.infos[certname]['days'] = conf_cert['days']
             self.chain[certname] = self.dir[certname]+'/certs/chain.pem'
 
-            self.index_exists = os.path.exists(self.index_file[certname]) and os.access(self.index_file[certname], os.R_OK)
-            if self.index_exists:
+            self.index_exists[certname] = os.path.exists(self.index_file[certname]) and os.access(self.index_file[certname], os.R_OK)
+            if self.index_exists[certname]:
                 with open(self.index_file[certname], 'r') as data:
-                    self.index[certname] = yaml.load(data)
+                    self.index[self.root_certname[certname]] = yaml.load(data)
             else:
-                self.index[certname] = {'current': 1000}
+                self.index[self.root_certname[certname]] = {'current': 1000}
         return self
 
     def ensure_dirs(self):
@@ -149,7 +151,7 @@ class Certificate:
                       self.changed = True
                 if not self.index_exists:
                     with open(self.index_file[certname], 'w+') as outfile:
-                        yaml.dump(self.index[certname], outfile, default_flow_style=True)
+                        yaml.dump(self.index[self.root_certname[certname]], outfile, default_flow_style=True)
         return self
 
     def ensure_private_key(self, certname):
@@ -255,7 +257,7 @@ class Certificate:
         subject.emailAddress = self.infos[certname]['email_address']
         subject.CN = certname
         self.ca[certname].set_version(2)
-        self.ca[certname].set_serial_number(self.index[certname]['current'])
+        self.ca[certname].set_serial_number(self.index[self.root_certname[certname]]['current'])
         self.ca[certname].gmtime_adj_notBefore(0)
         self.ca[certname].gmtime_adj_notAfter(self.infos[certname]['days'] * 24 * 60 * 60)
         self.ca[certname].set_issuer(self.ca[certname].get_subject())
@@ -286,10 +288,10 @@ class Certificate:
             with open(self.cert_file[certname]) as infile:
                 outfile.write(infile.read())
 
-        self.index[certname][self.index[certname]['current']] = { 'status': 'valid', 'name': certname }
-        self.index[certname]['current'] += 1
+        self.index[self.root_certname[certname]][self.index[self.root_certname[certname]]['current']] = { 'status': 'valid', 'name': certname }
+        self.index[self.root_certname[certname]]['current'] += 1
         with open(self.index_file[certname], 'w') as outfile:
-            yaml.dump(self.index[certname], outfile, default_flow_style=True)
+            yaml.dump(self.index[self.root_certname[certname]], outfile, default_flow_style=True)
         self.changed = True
 
     def create_signed_cert(self, certname):
@@ -333,7 +335,7 @@ class Certificate:
         self.cert[certname] = OpenSSL.crypto.X509()
         self.cert[certname].set_version(2)
         self.cert[certname].set_subject(self.csr[certname].get_subject())
-        self.cert[certname].set_serial_number(self.index[certname]['current'])
+        self.cert[certname].set_serial_number(self.index[self.root_certname[certname]]['current'])
         self.cert[certname].gmtime_adj_notBefore(0)
         self.cert[certname].gmtime_adj_notAfter(self.infos[certname]['days'] * 24 * 60 * 60)
         self.cert[certname].set_issuer(self.root_cert[certname].get_subject())
@@ -384,10 +386,10 @@ class Certificate:
                         outfile.write(infile.read())
             os.symlink(self.chain_cert_ts[certname], self.chain_cert_file[certname])
 
-        self.index[certname][self.index[certname]['current']] = { 'status': 'valid', 'name': certname }
-        self.index[certname]['current'] += 1
+        self.index[self.root_certname[certname]][self.index[self.root_certname[certname]]['current']] = { 'status': 'valid', 'name': certname }
+        self.index[self.root_certname[certname]]['current'] += 1
         with open(self.index_file[certname], 'w') as outfile:
-            yaml.dump(self.index[certname], outfile, default_flow_style=True)
+            yaml.dump(self.index[self.root_certname[certname]], outfile, default_flow_style=True)
         self.changed = True
 
         return self
